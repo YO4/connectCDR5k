@@ -1,0 +1,427 @@
+-- futaba CDR-5000 interface adaptor
+-- based on jalib usb sereal library demo program (18f14k50_usb_serial.jal) released under the BSD license
+
+-- chip setup
+include 18f14k50
+
+-- target frequency to 48 MHz
+pragma target clock       48_000_000
+
+-- fuses
+pragma target CPUDIV        P1              -- NO_CPU_SYSTEM_CLOCK_DIVIDE
+pragma target USBDIV        P1              -- USB_CLOCK_COMES_DIRECTLY_FROM_THE_OSC1_OSC2_OSCILLATOR_BLOCK_NO_DIVIDE
+pragma target OSC           HS
+pragma target PLLEN         P4              -- OSCILLATOR_MULTIPLIED_BY_4
+pragma target FCMEN         DISABLED
+pragma target IESO          DISABLED
+pragma target PWRTE         DISABLED        -- power up timer
+pragma target BROWNOUT      DISABLED        -- no brownout detection
+pragma target VOLTAGE       V30             -- brown out voltage
+pragma target WDT           DISABLED        -- no watchdog
+pragma target WDTPS         P32K            -- watch dog saler setting
+pragma target MCLR          EXTERNAL        -- external reset
+pragma target LVP           DISABLED        -- no low-voltage programming
+pragma target XINST         ENABLED         -- extended instruction set
+pragma target DEBUG         DISABLED        -- background debugging
+pragma target CP0           DISABLED        -- code block 0 not protected
+pragma target CP1           DISABLED        -- code block 1 not protected
+pragma target CPB           DISABLED        -- bootblock code not write protected
+pragma target WRT0          DISABLED        -- table writeblock 0 not protected
+pragma target WRT1          DISABLED        -- table write block 1 not protected
+pragma target WRTB          DISABLED        -- bootblock not write protected
+pragma target WRTC          DISABLED        -- config not write protected
+pragma target EBTR0         DISABLED        -- table read block 0 not protected
+pragma target EBTR1         DISABLED        -- table read block 1 not protected
+pragma target EBTRB         DISABLED        -- boot block not protected
+pragma target HFOFST        ENABLED         -- THE_SYSTEM_CLOCK_IS_HELD_OFF_UNTIL_THE_HFINTOSC_IS_STABLE
+
+include delay
+include usb_serial
+include print
+include format
+
+-- timer 1 : capture high pulse width (FOSC/4), use interrupt
+-- timer 0 : static low timeout (FOSC/4/4,8bit overflow)
+-- timer 2 : static high timeout (FOSC/4/16,preset timer)
+
+procedure t1ccp1_init() is
+
+   -- T1CON_TMR1ON = 0 ; timer1 stop
+   -- T1CON_T1CKPS = 0 ; prescaler 1
+   -- T1CON_TMR1CS = 0 ; internal clock
+   -- T1CON_T1OSCEN = 0 ; oscillator disable
+   -- T1CON_RD16 = 1 ; r/w 16bit mode
+   T1CON = 0x80
+
+   T3CON_T3CCP1 = 0 ; CCP1 use timer1
+
+   PIR1_CCP1IF = 0
+   PIE1_CCP1IE = 0
+   CCP1CON_CCP1M = 4 ; capture falling edge
+end procedure
+
+procedure t1ccp1_enable() is
+   pragma inline
+
+   PIE1_CCP1IE = 1
+end procedure
+
+procedure t1ccp1_disable() is
+   pragma inline
+
+   PIE1_CCP1IE = 0
+end procedure
+
+procedure t1ccp1_start() is
+   pragma inline
+
+   T1CON_TMR1ON = 1
+end procedure
+
+procedure t1ccp1_stop() is
+   pragma inline
+
+   T1CON_TMR1ON = 0
+end procedure
+
+procedure t1ccp1_clear() is
+   pragma inline
+
+   TMR1H = 0
+   TMR1L = 0
+   PIR1_CCP1IF = 0
+end procedure
+
+
+procedure t2_init() is
+
+   -- T2CON_T2OUTPS = 5 ; output postscaler 6
+   -- T2CON_TMR2ON = 0 ; timer2 off
+   -- T2CON_T2CKPS = 1 ; input prescaler 4(3MHz at 48MHzFOSC)
+   T2CON = 0x11
+   PR2 = 250 ; 500usec at 48MHzFOSC
+
+   PIR1_TMR2IF = 0
+   PIE1_TMR2IE = 0
+end procedure
+
+function t2_check() return bit is
+   pragma inline
+
+   return PIR1_TMR2IF
+end function
+
+procedure t2_start() is
+   pragma inline
+
+   T2CON_TMR2ON = 1
+end procedure
+
+procedure t2_stop() is
+   pragma inline
+
+   T2CON_TMR2ON = 0
+end procedure
+
+procedure t2_clear() is
+   pragma inline
+
+   tmr2 = 0
+   PIR1_TMR2IF = 0
+end procedure
+
+
+procedure t0_init() is
+   -- T0CON_T0PS = 4   ; prescaler 32 (2.67usec at 48MHzFOSC)
+   -- T0CON_PSA = 0    ; prescaler enable
+   -- T0CON_T0CS = 0   ; use internal clock
+   -- T0CON_T08BIT = 1 ; 8bit mode
+   -- T0CON_TMR0ON = 0 ; timer stop
+   T0CON = 0x44
+
+   INTCON_TMR0IF = 0
+   INTCON_TMR0IE = 0
+end procedure
+
+function t0_check() return bit is
+   pragma inline
+
+   return INTCON_TMR0IF
+end function
+
+procedure t0_start() is
+   pragma inline
+
+   T0CON_TMR0ON = 1
+end procedure
+
+procedure t0_stop() is
+   pragma inline
+
+   T0CON_TMR0ON = 0
+end procedure
+
+procedure t0_clear() is
+   pragma inline
+
+   TMR0L = 68				-- overflow 500usec
+   INTCON_TMR0IF = 0
+end procedure
+
+
+-- interrupt on change
+
+procedure ioc_init() is
+   INTCON_RABIE = 0
+   INTCON_RABIF = 0
+   IOCA         = 0x00		-- PORTA ioc disable
+   IOCB         = 0x80		-- RB7 ioc enable
+end procedure
+
+function ioc_check return bit is
+   pragma inline
+
+   return INTCON_RABIF
+end function
+
+procedure ioc_enable() is
+   pragma inline
+
+   INTCON_RABIE = 1
+end procedure
+
+procedure ioc_disable() is
+   pragma inline
+
+   INTCON_RABIE = 0
+end procedure
+
+procedure ioc_clear() is
+   pragma inline
+
+   INTCON_RABIF = 0
+end procedure
+
+-- variables
+
+var bit usb_connected = false
+
+var byte state = 0
+
+alias rx                       is pin_b7
+alias rx_direction             is pin_b7_direction
+rx_direction = input
+pin_CCP1_direction = input
+
+alias mon0           is LATC_LATC7
+alias mon0_direction is pin_C7_direction
+mon0 = 0
+mon0_direction = output
+
+alias mon1           is LATC_LATC6
+alias mon1_direction is pin_C6_direction
+mon1 = 0
+mon1_direction = output
+
+-- INTCON2_NRABPU = 0
+
+const byte NUMBYTES = 90
+const byte NUMMUXDATA = 16
+const byte NUMEXTDATA = 7
+
+var byte message[NUMBYTES+NUMEXTDATA*2+5]
+var word muxdata[NUMMUXDATA]
+message[0] = 0xaa
+message[1] = 0xaa
+message[2] = 0xaa
+message[3+NUMBYTES+NUMEXTDATA*2 + 0] = 0x55
+message[3+NUMBYTES+NUMEXTDATA*2 + 1] = 0x55
+
+var byte bytes[NUMBYTES] at message[3]
+var byte muxidx at bytes[78]
+var word muxvar at bytes[76]
+var word muxtxdata[NUMEXTDATA] at message[3+NUMBYTES]
+
+var byte bytepos, byteval, bitpos
+var word bitcount
+
+var byte usbrx
+
+-- code start here
+
+-- initialize
+
+INTCON_GIE = false
+
+-- set all IO as digital
+enable_digital_io()
+
+-- setup CCP1
+t1ccp1_init()
+
+-- setup interrupt on change(rb7)
+ioc_init()
+
+-- setup timers
+t2_init()
+t0_init()
+
+-- setup the USB serial library
+usb_serial_init()
+
+-- main loop
+
+INTCON_PEIE = on  ; enable interrupt
+INTCON_GIE  = on
+state = 0
+
+forever loop
+	-- poll the usb ISR function on a regular base, in order to 
+	-- serve the USB requests
+mon0 = 0
+	usb_serial_flush()
+
+	-- check if USB device has been configured by the HOST
+	if ( usb_cdc_line_status() ==  0x00 )  then
+		usb_connected = false
+	else
+mon0 = 1
+		if !usb_connected then
+			usb_connected = true
+		end if
+	end if
+	case state of
+	0:	-- initialize
+		BLOCK
+			ioc_disable()
+			t1ccp1_disable()
+			t1ccp1_stop()
+			t2_stop()
+			t0_stop()
+			t1ccp1_clear()
+			t2_clear()
+			t0_clear()
+
+			t0_start()
+			state = 1
+--	mon1 = 0
+		END BLOCK
+	1:	-- search rise edge after interval(t0)
+		BLOCK
+			if rx then
+				if t0_check() then		-- rising edge after interval
+					t1ccp1_start()
+					t1ccp1_enable()
+					t2_start()
+					t0_clear()
+					ioc_enable()
+					bytepos = 0
+					byteval = 0
+					bitpos = 0x80
+					bitcount = 0
+					state = 2
+--	mon1 = 1
+				else
+					t0_clear()					-- wait next low
+				end if
+	  		end if
+		END BLOCK
+	2,3:	-- wait finish reception
+		BLOCK
+			if rx then
+				t0_clear()
+			else
+				t2_clear()
+			end if
+			if t2_check() then		-- static high overrun
+				state = 4
+			end if
+			if t0_check() then		-- static low overrun
+				state = 4
+			end if
+			-- otherwise state advance in interrupt
+		END BLOCK
+	4:
+		BLOCK
+			ioc_disable()
+			t1ccp1_disable()
+			t1ccp1_stop()
+			t2_stop()
+			t0_stop()
+			--	if bitcount == NUMBYTES * 8 then
+			if bytepos >= NUMBYTES then
+				if (bitcount & 7) == 0 then
+					state = 5
+					if muxidx < NUMMUXDATA then
+						muxdata[muxidx] = muxvar
+					end if
+				end if
+			else
+				state = 0
+			end if
+mon1 = 1
+		END BLOCK
+	5:
+		BLOCK
+mon1 = 0
+			state = 0
+			if usb_connected then
+				--	format_word_dec(usb_serial_data, bitcount, 5, 0)
+				--	format_byte_dec(usb_serial_data, bytepos, 4, 0)
+				--	usb_serial_data = 13
+				--	usb_serial_data = 10
+				muxtxdata[0] = 0
+				muxtxdata[1] = muxdata[12]
+				muxtxdata[2] = muxdata[15]
+				muxtxdata[3] = muxdata[13]
+				muxtxdata[4] = muxdata[8]
+				muxtxdata[5] = muxdata[11]
+				muxtxdata[6] = muxdata[9]
+				print_string(usb_serial_data, message)
+			end if
+		END BLOCK
+	OTHERWISE
+		state = 0
+	end case
+
+	-- check for input character
+--	if usb_serial_read( usbrx ) then
+--	end if
+	
+end loop
+
+procedure service_interrupts() is
+	pragma interrupt
+
+	if ioc_check() then
+		if rx then
+			t1ccp1_clear()
+			t1ccp1_start()
+			t1ccp1_enable()
+		end if
+		ioc_clear()
+	end if
+	if PIR1_CCP1IF then
+		t1ccp1_disable()
+		t1ccp1_stop()
+		t1ccp1_clear()
+		if state == 2 then
+			state = 3
+		else
+			bitcount = bitcount + 1
+			if bytepos < NUMBYTES then
+				if CCPR1 > 360 then					-- long term high pulse(>30usec)
+					byteval = byteval | bitpos
+				end if
+				bitpos = bitpos >> 1
+				if bitpos == 0 then
+					bytes[bytepos] = byteval
+					bitpos = 0x80
+					byteval = 0
+					bytepos = bytepos + 1
+				end if
+			end if
+		end if
+	end if
+end procedure
+
