@@ -44,20 +44,36 @@ include format
 -- timer 0 : static low timeout (FOSC/4/4,8bit overflow)
 -- timer 2 : static high timeout (FOSC/4/16,preset timer)
 
+const byte CCP1M_FALL = 4
+const byte CCP1M_RISE = 5
+
 procedure t1ccp1_init() is
 
    -- T1CON_TMR1ON = 0 ; timer1 stop
    -- T1CON_T1CKPS = 0 ; prescaler 1
    -- T1CON_TMR1CS = 0 ; internal clock
    -- T1CON_T1OSCEN = 0 ; oscillator disable
-   -- T1CON_RD16 = 1 ; r/w 16bit mode
-   T1CON = 0x80
+   -- T1CON_RD16 = 0 ; r/w 8bit mode
+   T1CON = 0x00
 
    T3CON_T3CCP1 = 0 ; CCP1 use timer1
 
    PIR1_CCP1IF = 0
    PIE1_CCP1IE = 0
-   CCP1CON_CCP1M = 4 ; capture falling edge
+   --CCP1CON_CCP1M = 4 ; capture falling edge
+   CCP1CON = CCP1M_FALL
+end procedure
+
+procedure t1ccp1_catchrise() is
+   pragma inline
+
+   CCP1CON = CCP1M_RISE
+end procedure
+
+procedure t1ccp1_catchfall() is
+   pragma inline
+
+   CCP1CON = CCP1M_FALL
 end procedure
 
 procedure t1ccp1_enable() is
@@ -87,8 +103,8 @@ end procedure
 procedure t1ccp1_clear() is
    pragma inline
 
-   TMR1H = 0
-   TMR1L = 0
+--   TMR1L = 0
+--   TMR1H = 0
    PIR1_CCP1IF = 0
 end procedure
 
@@ -169,46 +185,13 @@ procedure t0_clear() is
 end procedure
 
 
--- interrupt on change
-
-procedure ioc_init() is
-   INTCON_RABIE = 0
-   INTCON_RABIF = 0
-   IOCA         = 0x00		-- PORTA ioc disable
-   IOCB         = 0x80		-- RB7 ioc enable
-end procedure
-
-function ioc_check return bit is
-   pragma inline
-
-   return INTCON_RABIF
-end function
-
-procedure ioc_enable() is
-   pragma inline
-
-   INTCON_RABIE = 1
-end procedure
-
-procedure ioc_disable() is
-   pragma inline
-
-   INTCON_RABIE = 0
-end procedure
-
-procedure ioc_clear() is
-   pragma inline
-
-   INTCON_RABIF = 0
-end procedure
-
 -- variables
 
 var bit usb_connected = false
 
 var byte state = 0
 
-alias rx                       is pin_b7
+alias rx                       is pin_b7             -- not used
 alias rx_direction             is pin_b7_direction
 rx_direction = input
 pin_CCP1_direction = input
@@ -259,9 +242,6 @@ enable_digital_io()
 -- setup CCP1
 t1ccp1_init()
 
--- setup interrupt on change(rb7)
-ioc_init()
-
 -- setup timers
 t2_init()
 t0_init()
@@ -293,7 +273,6 @@ mon0 = 1
 	case state of
 	0:	-- initialize
 		BLOCK
-			ioc_disable()
 			t1ccp1_disable()
 			t1ccp1_stop()
 			t2_stop()
@@ -308,13 +287,14 @@ mon0 = 1
 		END BLOCK
 	1:	-- search rise edge after interval(t0)
 		BLOCK
-			if rx then
+			if pin_CCP1 then
 				if t0_check() then		-- rising edge after interval
+					t1ccp1_catchfall()
 					t1ccp1_start()
+					t1ccp1_clear()
 					t1ccp1_enable()
 					t2_start()
 					t0_clear()
-					ioc_enable()
 					bytepos = 0
 					byteval = 0
 					bitpos = 0x80
@@ -328,7 +308,7 @@ mon0 = 1
 		END BLOCK
 	2,3:	-- wait finish reception
 		BLOCK
-			if rx then
+			if pin_CCP1 then
 				t0_clear()
 			else
 				t2_clear()
@@ -343,7 +323,6 @@ mon0 = 1
 		END BLOCK
 	4:
 		BLOCK
-			ioc_disable()
 			t1ccp1_disable()
 			t1ccp1_stop()
 			t2_stop()
@@ -390,35 +369,38 @@ mon1 = 0
 	
 end loop
 
+var word risetime
+var word falltime
+
 procedure service_interrupts() is
 	pragma interrupt
 
-	if ioc_check() then
-		if rx then
-			t1ccp1_clear()
-			t1ccp1_start()
-			t1ccp1_enable()
-		end if
-		ioc_clear()
-	end if
 	if PIR1_CCP1IF then
-		t1ccp1_disable()
-		t1ccp1_stop()
-		t1ccp1_clear()
 		if state == 2 then
 			state = 3
+			t1ccp1_clear()
+			t1ccp1_catchrise()
 		else
-			bitcount = bitcount + 1
-			if bytepos < NUMBYTES then
-				if CCPR1 > 360 then					-- long term high pulse(>30usec)
-					byteval = byteval | bitpos
-				end if
-				bitpos = bitpos >> 1
-				if bitpos == 0 then
-					bytes[bytepos] = byteval
-					bitpos = 0x80
-					byteval = 0
-					bytepos = bytepos + 1
+			if CCP1CON == CCP1M_RISE then
+				risetime = CCPR1
+				t1ccp1_clear()
+				t1ccp1_catchfall()
+			else
+				falltime = CCPR1
+				t1ccp1_clear()
+				t1ccp1_catchrise()
+				bitcount = bitcount + 1
+				if bytepos < NUMBYTES then
+					if (falltime - risetime) > 360 then		-- long term high pulse(>30usec)
+		  				byteval = byteval | bitpos
+					end if
+					bitpos = bitpos >> 1
+					if bitpos == 0 then
+						bytes[bytepos] = byteval
+						bitpos = 0x80
+						byteval = 0
+						bytepos = bytepos + 1
+					end if
 				end if
 			end if
 		end if
