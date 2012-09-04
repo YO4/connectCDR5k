@@ -1,0 +1,55 @@
+-- futaba CDR-5000 interface adaptor
+-- based on jalib usb sereal library demo program (18f14k50_usb_serial.jal) released under the BSD license
+
+-- this is hardware definition of pic18f2550
+
+-- chip setup
+include 18f2550
+
+-- target frequency to 48 MHz
+pragma target clock       48_000_000
+
+-- Configuration memory settings (fuses)
+pragma target OSC      HS_PLL      -- HS crystal or resonator
+--                                    and using PLL
+pragma target PLLDIV   P5          -- reduce OSC 20->4 MHz for PLL input
+pragma target CPUDIV   P1          -- CPU freq. from PLL(96)/2 -> 48 MHz
+--                                    (without PLL: CPU freq. = OSC freq.)
+pragma target USBPLL   F48MHZ      -- USB clock from PLL module
+pragma target FCMEN    DISABLED    -- no fail-safe clock monitoring
+pragma target IESO     DISABLED    -- no int/ext clock switchover
+pragma target BROWNOUT DISABLED    -- no brownout detection
+pragma target VREGEN   ENABLED     -- enable USB voltage regulator
+--                                    (when no external regulator at Vusb)
+pragma target WDT      DISABLED    -- no watchdog
+pragma target XINST    DISABLED    -- not supported by JalV2
+pragma target DEBUG    DISABLED    -- no debugging
+pragma target LVP      DISABLED    -- no Low Voltage Programming
+pragma target MCLR     EXTERNAL    -- reset externally
+--
+-- Note: Not specified:
+--       Code protection, Boot Block Code protection, Data EEPROM protection,
+--       Write protection, Configuration Memory write protection,
+--       Table Read protection, Boot Block Table Read protection,
+--       and maybe some other configuration bits.
+--
+OSCCON_SCS = 0b00                  -- select primary clock source
+
+
+alias rx                       is pin_b7             -- not used
+alias rx_direction             is pin_b7_direction
+rx_direction = input
+pin_CCP1_direction = input
+
+alias mon0           is LATC_LATC0
+alias mon0_direction is pin_C0_direction
+mon0 = 0
+mon0_direction = output
+
+alias mon1           is LATC_LATC1
+alias mon1_direction is pin_C1_direction
+mon1 = 0
+mon1_direction = output
+
+include connectCDR5k
+
